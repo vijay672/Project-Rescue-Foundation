@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+  # 1. Reverse Proxy & Frontend Web Application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    environment:
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-https://your-project.supabase.co}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-your-anon-key}
+      - VITE_SUPABASE_STORAGE_BUCKET=foundation-media
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 2. FastAPI REST & PostGIS Geospatial Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rescue_admin:rescue_dev_password@db:5432/project_rescue}
+      REDIS_URL: redis://redis:6379/0
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      ENVIRONMENT: local
+      SUPABASE_URL: ${VITE_SUPABASE_URL:-https://your-project.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: foundation-media
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 3. Celery Background Worker (Quarantine & Derivative Processing)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.celery_worker.app worker --loglevel=info -Q security_quarantine,media_processing,analytics --concurrency=4
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rescue_admin:rescue_dev_password@db:5432/project_rescue}
+      REDIS_URL: redis://redis:6379/0
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      ENVIRONMENT: local
+      SUPABASE_URL: ${VITE_SUPABASE_URL:-https://your-project.supabase.co}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: foundation-media
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_started
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 4. Celery Beat Periodic Scheduler (Regional Compliance Rollups)
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.celery_worker.app beat --loglevel=info
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rescue_admin:rescue_dev_password@db:5432/project_rescue}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: local
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 5. ClamAV Antivirus Daemon (TCP 3310)
+  clamav:
+    image: clamav/clamav:latest
+    ports:
+      - "3310:3310"
+    environment:
+      - CLAMAV_NO_FRESHCLAMD=false
+    volumes:
+      - clamav_db:/var/lib/clamav
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 6. Redis Message Broker & State Store
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+  # 7. PostGIS 16 Relational Geospatial Database
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: project_rescue
+      POSTGRES_USER: rescue_admin
+      POSTGRES_PASSWORD: rescue_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rescue_admin -d project_rescue"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - rescue_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  clamav_db:
+
+networks:
+  rescue_network:
+    driver: bridge

@@ -1,0 +1,8 @@
+{
+  "name": "Project Rescue Foundation - Field Activity & Case Tracking Platform",
+  "description": "Production-grade offline-first field activity and case tracking system with GPS verification, private media attachments, managerial review, and regional analytics for Project Rescue Foundation.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
