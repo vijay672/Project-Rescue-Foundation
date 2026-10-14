@@ -26,22 +26,7 @@ interface DBUser {
   passwordHash?: string;
 }
 
-// Pre-seeded Manager credentials (until manager modifies them in account management)
-// Email: abc@xyz.com | Password: 12345
-const users: DBUser[] = [
-  {
-    id: 'usr-mgr-01',
-    name: 'Operations Manager',
-    email: 'abc@xyz.com',
-    role: 'operations_manager',
-    regions: ['reg-east-africa', 'reg-se-asia', 'reg-latam'],
-    status: 'active',
-    mfaEnabled: true,
-    lastLoginAt: new Date().toISOString(),
-    deviceInfo: 'Operations Command Console',
-    passwordHash: '12345',
-  },
-];
+const users: DBUser[] = [];
 
 let currentUser: DBUser | null = null;
 let isUserAuthenticated = false;
@@ -49,7 +34,7 @@ let isUserAuthenticated = false;
 // Dynamic helper to retrieve the active Operations Manager's email
 function getManagerEmail(): string {
   const mgr = users.find((u) => u.role === 'operations_manager' && u.status === 'active');
-  return mgr ? mgr.email : 'abc@xyz.com';
+  return mgr?.email || 'your organization administrator';
 }
 
 // In-Memory System Outbox for Dispatched Email Notifications
@@ -233,10 +218,6 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
     return res.status(401).json({ message: 'Invalid credentials. No registered account found with this email.' });
   }
 
-  if (target.passwordHash === 'google-sso-verified') {
-    return res.status(401).json({ message: 'This account is linked with Google SSO. Please use the "Sign in with Google" button.' });
-  }
-
   if (target.passwordHash && target.passwordHash !== password) {
     recordAudit('LOGIN_FAILED', 'UserSession', target.id, 'Invalid password attempt', 'denied');
     return res.status(401).json({ message: 'Invalid credentials. Please verify your email and password.' });
@@ -272,67 +253,6 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
   });
 });
 
-// Google Sign-In & Registration Flow (Supports Role Mapping)
-apiRouter.post('/auth/google', (req: Request, res: Response) => {
-  const { email, name, role } = req.body;
-  if (!email) {
-    return res.status(400).json({ message: 'Google account email is required.' });
-  }
-  const cleanEmail = email.trim().toLowerCase();
-
-  let target = users.find((u) => u.email.toLowerCase() === cleanEmail);
-
-  if (target) {
-    if (target.status === 'suspended') {
-      return res.status(403).json({ message: 'Access denied. Account is suspended.' });
-    }
-    if (target.status === 'rejected') {
-      return res.status(403).json({ message: 'Account clearance was declined by administration.' });
-    }
-
-    // Role mapping: preserve existing assigned role, or update if role specified
-    if (role && (target.role !== role)) {
-      target.role = role;
-    }
-
-    target.status = 'active';
-    currentUser = target;
-    isUserAuthenticated = true;
-    currentUser.lastLoginAt = new Date().toISOString();
-    recordAudit('GOOGLE_LOGIN_SUCCESS', 'UserSession', target.id, `Google authenticated: ${target.email} with mapped role ${target.role}`);
-    return res.json({ user: currentUser, sessionValid: true });
-  }
-
-  // Initial Google account registration: Map role based on email, parameter, or default
-  const isManager = cleanEmail === 'abc@xyz.com' || cleanEmail.includes('manager') || role === 'operations_manager';
-  const assignedRole: 'field_staff' | 'operations_manager' | 'system_admin' = 
-    role === 'operations_manager' || isManager ? 'operations_manager' :
-    role === 'system_admin' ? 'system_admin' : 'field_staff';
-
-  const newUser: DBUser = {
-    id: `usr-${crypto.randomUUID().slice(0, 8)}`,
-    name: (name || cleanEmail.split('@')[0]).trim(),
-    email: cleanEmail,
-    role: assignedRole,
-    regions: assignedRole === 'operations_manager' ? ['reg-east-africa', 'reg-se-asia', 'reg-latam'] : ['reg-east-africa'],
-    status: 'active',
-    mfaEnabled: true,
-    lastLoginAt: new Date().toISOString(),
-    deviceInfo: 'Google OAuth SSO',
-    passwordHash: 'google-sso-verified',
-  };
-
-  users.push(newUser);
-  currentUser = newUser;
-  isUserAuthenticated = true;
-  recordAudit('GOOGLE_REGISTRATION_SUCCESS', 'UserAccount', newUser.id, `Google account registered with mapped role: ${assignedRole}`);
-
-  return res.json({
-    user: currentUser,
-    sessionValid: true,
-    message: `Authenticated with Google as ${newUser.name} (${assignedRole.replace('_', ' ')})`,
-  });
-});
 
 // Secure OTP Password Reset: Step 1 (Request OTP via Security Mail)
 apiRouter.post('/auth/request-otp', (req: Request, res: Response) => {
@@ -358,21 +278,11 @@ apiRouter.post('/auth/request-otp', (req: Request, res: Response) => {
     lastRequestedAt: now,
   });
 
-  // Requirement 8: For OTP and password reset, use a dedicated security mail, NOT manager mail!
-  const securitySender = 'security-alerts@projectrescue.org';
-  sendOutboxEmail(
-    securitySender,
-    cleanEmail,
-    'Your One-Time Password (OTP) - Account Security Verification',
-    `Hello,\n\nA password reset request was initiated for your Project Rescue account.\n\nYour 6-digit verification code is:\n\n   ${otp}\n\nThis OTP is valid for 10 minutes. It can only be used once.\n\nIf you did not initiate this request, your account may be subject to unauthorized access attempts. Please contact security administration immediately.\n\nProject Rescue Security & Identity Governance`,
-    'security_otp'
-  );
-
-  // Return generic safe response to prevent email enumeration attacks
+  // This local development server has no mail transport. Do not pretend a
+  // reset email was sent or expose the verification code in the response.
   res.json({
     success: true,
-    message: `A single-use 6-digit OTP code has been dispatched to ${cleanEmail}. Check your inbox or system dispatch log.`,
-    otpHint: otp, // Provided for live development preview convenience
+    message: 'Password reset delivery is not configured. Use Supabase Auth password recovery in a configured environment.',
   });
 });
 
@@ -817,7 +727,7 @@ apiRouter.patch('/activities/:id/status', (req: Request, res: Response) => {
 
   // Requirement 6: Mailing should be done from manager mail to the user mail when review is done!
   const creatorUser = users.find((u) => u.id === activity.staffId) || users.find((u) => u.name.toLowerCase() === activity.staffName.toLowerCase());
-  const recipientEmail = creatorUser ? creatorUser.email : 'caseworker@projectrescue.org';
+  const recipientEmail = creatorUser?.email || '';
   const managerEmail = getManagerEmail();
 
   sendOutboxEmail(
@@ -1096,7 +1006,7 @@ apiRouter.post('/feedback', (req: Request, res: Response) => {
 
     // Requirement 6: Dispatch email from manager to user when feedback is received!
     const creatorUser = users.find((u) => u.id === activity.staffId) || users.find((u) => u.name.toLowerCase() === activity.staffName.toLowerCase());
-    const recipientEmail = creatorUser ? creatorUser.email : 'caseworker@projectrescue.org';
+    const recipientEmail = creatorUser?.email || '';
     const managerEmail = getManagerEmail();
 
     sendOutboxEmail(

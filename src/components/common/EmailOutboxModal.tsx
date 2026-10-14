@@ -104,7 +104,7 @@ export const EmailOutboxModal: React.FC<EmailOutboxModalProps> = ({ isOpen, onCl
             ) : (
               emails.map((mail) => {
                 const isSelected = selectedEmail?.id === mail.id;
-                const isManagerSender = mail.from.includes('abc@xyz.com') || !mail.from.includes('security');
+                const isManagerSender = mail.category !== 'security_otp';
                 return (
                   <button
                     key={mail.id}

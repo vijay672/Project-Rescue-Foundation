@@ -97,25 +97,7 @@ export const api = {
     });
   },
 
-  async loginWithGoogle(payload?: { email: string; name: string; avatar?: string; role?: UserRole }): Promise<{ user: User; sessionValid?: boolean; pendingApproval?: boolean; message?: string }> {
-    if (isSupabaseConfigured()) {
-      try {
-        await supabaseAuth.signInWithGoogle();
-        const { user } = await supabaseAuth.getSession();
-        if (user) {
-          return { user, sessionValid: true };
-        }
-      } catch (err) {
-        console.warn('Supabase OAuth notice:', err);
-      }
-    }
-    return request('/auth/google', {
-      method: 'POST',
-      body: JSON.stringify(payload || {}),
-    });
-  },
-
-  async requestPasswordOtp(email: string): Promise<{ success: boolean; message: string; otpHint?: string }> {
+  async requestPasswordOtp(email: string): Promise<{ success: boolean; message: string }> {
     return request('/auth/request-otp', {
       method: 'POST',
       body: JSON.stringify({ email }),

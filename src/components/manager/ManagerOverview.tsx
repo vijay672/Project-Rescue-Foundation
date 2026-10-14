@@ -208,7 +208,7 @@ export const ManagerOverview: React.FC<ManagerOverviewProps> = ({
               )}
             </div>
             <p className="text-xs text-[#64737A] mt-0.5">
-              New registrations require manager acceptance before users can sign in. Approving dispatches an official confirmation email from your manager address ({currentUser?.email || 'abc@xyz.com'}).
+              New registrations require manager acceptance before users can sign in. Approving dispatches an official confirmation email from your manager address ({currentUser?.email || 'your organization administrator'}).
             </p>
           </div>
 

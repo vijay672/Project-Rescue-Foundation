@@ -69,13 +69,16 @@ export const supabaseAuth = {
         return { user: null, session: null };
       }
 
-      // 1. Fetch verified user profile from public.profiles by auth ID
-      const { data: profile } = await supabase
+      // Preserve the persisted authorization profile on every subsequent login.
+      let { data: profile } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', data.session.user.id)
         .single();
 
+      // Existing accounts retain the role from their profile keyed to the
+      // verified Supabase Auth UUID. New identities default to field staff.
+      const verifiedEmail = data.session.user.email?.trim().toLowerCase();
       if (profile) {
         const user: User = {
           id: profile.id,
@@ -92,38 +95,12 @@ export const supabaseAuth = {
         return { user, session: data.session };
       }
 
-      // 2. Role Mapping upon initial Google account registration:
-      // Check if an existing profile exists with matching email
-      const userEmail = data.session.user.email?.toLowerCase();
-      let mappedRole: UserRole = 'field_staff';
-      let mappedRegions = ['reg-east-africa'];
-      let mappedStatus: User['status'] = 'active';
-
-      if (userEmail) {
-        try {
-          const { data: existingProfile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', userEmail)
-            .single();
-
-          if (existingProfile) {
-            mappedRole = existingProfile.role || 'field_staff';
-            mappedRegions = existingProfile.assigned_regions || ['reg-east-africa'];
-            mappedStatus = existingProfile.status || 'active';
-          } else if (userEmail === 'abc@xyz.com' || userEmail.includes('manager')) {
-            mappedRole = 'operations_manager';
-            mappedRegions = ['reg-east-africa', 'reg-se-asia', 'reg-latam'];
-          }
-        } catch {
-          // Fall back to default role
-        }
-      }
-
-      // Check if role was specified in Google metadata
-      if (data.session.user.user_metadata?.role) {
-        mappedRole = data.session.user.user_metadata.role as UserRole;
-      }
+      // New identities receive the least-privileged role. Never trust the
+      // user-editable Google user_metadata for authorization.
+      const mappedRole: UserRole = 'field_staff';
+      const mappedRegions: string[] = ['reg-east-africa'];
+      const mappedStatus: User['status'] = 'active';
+      const userEmail = verifiedEmail || '';
 
       const userName = data.session.user.user_metadata?.full_name || 
                        data.session.user.user_metadata?.name || 
@@ -140,9 +117,9 @@ export const supabaseAuth = {
         lastLoginAt: new Date().toISOString(),
       };
 
-      // Persist / update profile with correctly mapped role
+      // Create the new profile with the correctly mapped least-privileged role.
       try {
-        await supabase.from('profiles').upsert({
+        const { error: profileError } = await supabase.from('profiles').insert({
           id: data.session.user.id,
           name: userName,
           email: user.email,
@@ -152,8 +129,10 @@ export const supabaseAuth = {
           mfa_enabled: true,
           last_login_at: new Date().toISOString(),
         });
-      } catch (upsertErr) {
-        console.warn('Profile initialization note:', upsertErr);
+        if (profileError) throw profileError;
+      } catch (profileInitError) {
+        console.error('Profile initialization failed:', profileInitError);
+        throw new Error('Your Google account was verified, but its access profile could not be initialized. Contact an administrator.');
       }
 
       localStorage.setItem('project_rescue_auth_user', JSON.stringify(user));
@@ -202,7 +181,7 @@ export const supabaseAuth = {
           .eq('id', data.user.id)
           .single();
 
-        const role: UserRole = profile?.role || (data.user.user_metadata?.role as UserRole) || 'field_staff';
+        const role: UserRole = profile?.role || 'field_staff';
         const user: User = {
           id: data.user.id,
           name: profile?.name || data.user.user_metadata?.name || email.split('@')[0],
@@ -238,7 +217,6 @@ export const supabaseAuth = {
         options: {
           data: {
             name: payload.name,
-            role: payload.role || 'field_staff',
           },
         },
       });
@@ -252,25 +230,28 @@ export const supabaseAuth = {
           id: data.user.id,
           name: payload.name,
           email: payload.email,
-          role: payload.role || 'field_staff',
+          role: 'field_staff',
           regions: ['reg-east-africa'],
           status: 'active',
           mfaEnabled: true,
           lastLoginAt: new Date().toISOString(),
         };
 
-        // Attempt upserting to public.profiles
+        // Create the least-privileged profile. Report database failures rather
+        // than caching an authenticated-looking user without persisted RBAC.
         try {
-          await supabase.from('profiles').upsert({
+          const { error: profileError } = await supabase.from('profiles').insert({
             id: data.user.id,
-            email: payload.email,
+            email: data.user.email || payload.email,
             name: payload.name,
-            role: payload.role || 'field_staff',
+            role: 'field_staff',
             status: 'active',
             mfa_enabled: true,
           });
-        } catch (profileErr) {
-          console.warn('Profile record insert warning:', profileErr);
+          if (profileError) throw profileError;
+        } catch (profileInitError) {
+          console.error('Profile record insert failed:', profileInitError);
+          throw new Error('Your account was created, but its access profile could not be initialized. Contact an administrator.');
         }
 
         localStorage.setItem('project_rescue_auth_user', JSON.stringify(user));
